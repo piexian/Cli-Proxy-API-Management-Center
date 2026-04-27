@@ -9,6 +9,9 @@ import type {
   AntigravityModelsPayload,
   GeminiCliParsedBucket,
   GeminiCliQuotaBucketState,
+  GitHubCopilotQuotaDetail,
+  GitHubCopilotQuotaRow,
+  GitHubCopilotUsagePayload,
   KimiUsagePayload,
   KimiUsageDetail,
   KimiLimitItem,
@@ -20,7 +23,7 @@ import {
   GEMINI_CLI_GROUP_LOOKUP,
   GEMINI_CLI_GROUP_ORDER,
 } from './constants';
-import { normalizeQuotaFraction } from './parsers';
+import { normalizeNumberValue, normalizeQuotaFraction, normalizeStringValue } from './parsers';
 import { isIgnoredGeminiCliModel } from './validators';
 
 export function pickEarlierResetTime(current?: string, next?: string): string | undefined {
@@ -123,7 +126,9 @@ export function buildGeminiCliQuotaBuckets(
       const remainingFraction = preferred
         ? preferred.remainingFraction
         : bucket.fallbackRemainingFraction;
-      const remainingAmount = preferred ? preferred.remainingAmount : bucket.fallbackRemainingAmount;
+      const remainingAmount = preferred
+        ? preferred.remainingAmount
+        : bucket.fallbackRemainingAmount;
       const resetTime = preferred ? preferred.resetTime : bucket.fallbackResetTime;
       return {
         id: bucket.id,
@@ -227,10 +232,7 @@ export function buildAntigravityQuotaGroups(
     };
   };
 
-  const appendGroup = (
-    id: string,
-    overrideResetTime?: string
-  ): AntigravityQuotaGroup | null => {
+  const appendGroup = (id: string, overrideResetTime?: string): AntigravityQuotaGroup | null => {
     const definition = definitions.get(id);
     if (!definition) return null;
     const group = buildGroup(definition, overrideResetTime);
@@ -251,6 +253,120 @@ export function buildAntigravityQuotaGroups(
   appendGroup('gemini-image', geminiProResetTime);
 
   return groups;
+}
+
+const GITHUB_COPILOT_QUOTA_DEFINITIONS = [
+  {
+    id: 'premium-interactions',
+    snakeKey: 'premium_interactions',
+    camelKey: 'premiumInteractions',
+    labelKey: 'github_copilot_quota.premium_interactions',
+  },
+  {
+    id: 'chat',
+    snakeKey: 'chat',
+    camelKey: 'chat',
+    labelKey: 'github_copilot_quota.chat',
+  },
+  {
+    id: 'completions',
+    snakeKey: 'completions',
+    camelKey: 'completions',
+    labelKey: 'github_copilot_quota.completions',
+  },
+] as const;
+
+function normalizeBooleanValue(value: unknown): boolean | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value !== 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+  }
+  return null;
+}
+
+function normalizeCopilotPercent(value: unknown): number | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.endsWith('%')) {
+      const parsed = Number(trimmed.slice(0, -1));
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+  }
+
+  const percent = normalizeNumberValue(value);
+  if (percent === null) return null;
+  return percent > 0 && percent <= 1 ? percent * 100 : percent;
+}
+
+function buildGitHubCopilotQuotaRow(
+  id: string,
+  labelKey: string,
+  detail: GitHubCopilotQuotaDetail | null | undefined,
+  resetTime?: string
+): GitHubCopilotQuotaRow | null {
+  if (!detail || typeof detail !== 'object') return null;
+
+  const entitlement = normalizeNumberValue(detail.entitlement);
+  const remaining = normalizeNumberValue(
+    detail.remaining ?? detail.quota_remaining ?? detail.quotaRemaining
+  );
+  const rawPercent = normalizeCopilotPercent(detail.percent_remaining ?? detail.percentRemaining);
+  const unlimited = normalizeBooleanValue(detail.unlimited) === true;
+  const quotaId = normalizeStringValue(detail.quota_id ?? detail.quotaId);
+  const overageCount = normalizeNumberValue(detail.overage_count ?? detail.overageCount);
+  const overagePermitted =
+    normalizeBooleanValue(detail.overage_permitted ?? detail.overagePermitted) ?? null;
+
+  const hasData =
+    unlimited ||
+    entitlement !== null ||
+    remaining !== null ||
+    rawPercent !== null ||
+    quotaId !== null ||
+    overageCount !== null;
+  if (!hasData) return null;
+
+  const remainingPercent =
+    rawPercent ??
+    (unlimited
+      ? 100
+      : entitlement !== null && entitlement > 0 && remaining !== null
+        ? (remaining / entitlement) * 100
+        : null);
+
+  return {
+    id,
+    labelKey,
+    quotaId,
+    remainingPercent,
+    remaining,
+    entitlement,
+    overageCount,
+    overagePermitted,
+    unlimited,
+    resetTime,
+  };
+}
+
+export function buildGitHubCopilotQuotaRows(
+  payload: GitHubCopilotUsagePayload
+): GitHubCopilotQuotaRow[] {
+  const snapshots = payload.quota_snapshots ?? payload.quotaSnapshots;
+  if (!snapshots || typeof snapshots !== 'object') return [];
+
+  const resetTime =
+    normalizeStringValue(payload.quota_reset_date ?? payload.quotaResetDate) ?? undefined;
+
+  return GITHUB_COPILOT_QUOTA_DEFINITIONS.map((definition) => {
+    const detail =
+      snapshots[definition.snakeKey as keyof typeof snapshots] ??
+      snapshots[definition.camelKey as keyof typeof snapshots];
+    return buildGitHubCopilotQuotaRow(definition.id, definition.labelKey, detail, resetTime);
+  }).filter((row): row is GitHubCopilotQuotaRow => row !== null);
 }
 
 function toInt(value: unknown): number | null {
@@ -393,8 +509,12 @@ export function buildKimiQuotaRows(payload: KimiUsagePayload): KimiQuotaRow[] {
   const limits = payload.limits;
   if (Array.isArray(limits)) {
     limits.forEach((item, idx) => {
-      const detail = (item.detail && typeof item.detail === 'object' ? item.detail : item) as KimiUsageDetail | KimiLimitItem;
-      const window = (item.window && typeof item.window === 'object' ? item.window : {}) as KimiLimitWindow;
+      const detail = (item.detail && typeof item.detail === 'object' ? item.detail : item) as
+        | KimiUsageDetail
+        | KimiLimitItem;
+      const window = (
+        item.window && typeof item.window === 'object' ? item.window : {}
+      ) as KimiLimitWindow;
       const fallbackLabel = kimiLimitLabel(item, detail, window, idx);
       const row = toKimiUsageRow(detail as Record<string, unknown>, fallbackLabel);
       if (row) {

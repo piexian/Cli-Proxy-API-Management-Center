@@ -246,6 +246,66 @@ export interface CodexQuotaState {
   errorStatus?: number;
 }
 
+// GitHub Copilot API payload types
+export interface GitHubCopilotQuotaDetail {
+  entitlement?: number | string;
+  overage_count?: number | string;
+  overageCount?: number | string;
+  overage_permitted?: boolean | number | string;
+  overagePermitted?: boolean | number | string;
+  percent_remaining?: number | string;
+  percentRemaining?: number | string;
+  quota_id?: string;
+  quotaId?: string;
+  quota_remaining?: number | string;
+  quotaRemaining?: number | string;
+  remaining?: number | string;
+  unlimited?: boolean | number | string;
+}
+
+export interface GitHubCopilotQuotaSnapshots {
+  chat?: GitHubCopilotQuotaDetail | null;
+  completions?: GitHubCopilotQuotaDetail | null;
+  premium_interactions?: GitHubCopilotQuotaDetail | null;
+  premiumInteractions?: GitHubCopilotQuotaDetail | null;
+}
+
+export interface GitHubCopilotUsagePayload {
+  access_type_sku?: string;
+  accessTypeSku?: string;
+  chat_enabled?: boolean | number | string;
+  chatEnabled?: boolean | number | string;
+  copilot_plan?: string;
+  copilotPlan?: string;
+  quota_reset_date?: string;
+  quotaResetDate?: string;
+  quota_snapshots?: GitHubCopilotQuotaSnapshots | null;
+  quotaSnapshots?: GitHubCopilotQuotaSnapshots | null;
+}
+
+export interface GitHubCopilotQuotaRow {
+  id: string;
+  labelKey: string;
+  quotaId?: string | null;
+  remainingPercent: number | null;
+  remaining: number | null;
+  entitlement: number | null;
+  overageCount: number | null;
+  overagePermitted: boolean | null;
+  unlimited: boolean;
+  resetTime?: string;
+}
+
+export interface GitHubCopilotQuotaState {
+  status: 'idle' | 'loading' | 'success' | 'error';
+  rows: GitHubCopilotQuotaRow[];
+  planType?: string | null;
+  resetTime?: string | null;
+  chatEnabled?: boolean | null;
+  error?: string;
+  errorStatus?: number;
+}
+
 // Kimi API payload types
 export interface KimiUsageDetail {
   used?: number;
